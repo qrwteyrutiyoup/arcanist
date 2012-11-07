@@ -122,6 +122,23 @@ final class ArcanistJSHintLinter extends ArcanistLinter {
     return $bin;
   }
 
+  private function removeIgnoredJSHintErrors(&$errors) {
+    $working_copy = $this->getEngine()->getWorkingCopy();
+    $ignored_errors = $working_copy->getConfig('lint.jshint.errorstoignore');
+
+    if (!is_array($ignored_errors)) {
+      return;
+    }
+
+    foreach ($errors as $key => $err) {
+      foreach ($ignored_errors as $ignored) {
+        if (strcmp($err->reason, $ignored) == 0) {
+          unset($errors[$key]);
+        }
+      }
+    }
+  }
+
   public function willLintPaths(array $paths) {
     if (!$this->isCodeEnabled(self::JSHINT_ERROR)) {
       return;
@@ -164,6 +181,8 @@ final class ArcanistJSHintLinter extends ArcanistLinter {
         "stdout:\n\n{$stdout}".
         "stderr:\n\n{$stderr}");
     }
+
+    $this->removeIgnoredJSHintErrors($errors);
 
     foreach ($errors as $err) {
       $this->raiseLintAtLine(
