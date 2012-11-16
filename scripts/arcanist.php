@@ -1,22 +1,6 @@
 #!/usr/bin/env php
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 sanity_check_environment();
 
 require_once dirname(__FILE__).'/__init_script__.php';
@@ -63,6 +47,7 @@ $args = array_values($argv);
 
 $working_directory = getcwd();
 $console = PhutilConsole::getConsole();
+$config = null;
 
 try {
 
@@ -125,9 +110,9 @@ try {
 
   $user_config = ArcanistBaseWorkflow::readUserConfigurationFile();
 
-  $config = $working_copy->getConfig('arcanist_configuration');
-  if ($config) {
-    $config = new $config();
+  $config_class = $working_copy->getConfig('arcanist_configuration');
+  if ($config_class) {
+    $config = new $config_class();
   } else {
     $config = new ArcanistConfiguration();
   }
@@ -304,7 +289,7 @@ try {
         id(new $listener())->register();
       } catch (PhutilMissingSymbolException $ex) {
         // Continue anwyay, since you may otherwise be unable to run commands
-        // like `arc set-config events.listeners in order to repair the damage
+        // like `arc set-config events.listeners` in order to repair the damage
         // you've caused.
         $console->writeErr(
           "ERROR: Failed to load event listener '%s'!\n",
@@ -319,25 +304,29 @@ try {
   $config->didRunWorkflow($command, $workflow, $err);
   exit((int)$err);
 
-} catch (ArcanistUsageException $ex) {
-  echo phutil_console_format(
-    "**Usage Exception:** %s\n",
-    $ex->getMessage());
+} catch (Exception $ex) {
+  $is_usage = ($ex instanceof ArcanistUsageException);
+  if ($is_usage) {
+    echo phutil_console_format(
+      "**Usage Exception:** %s\n",
+      $ex->getMessage());
+  }
+
+  if ($config) {
+    $config->didAbortWorkflow($command, $workflow, $ex);
+  }
+
   if ($config_trace_mode) {
     echo "\n";
     throw $ex;
   }
 
-  exit(1);
-} catch (Exception $ex) {
-  if ($config_trace_mode) {
-    throw $ex;
+  if (!$is_usage) {
+    echo phutil_console_format(
+      "**Exception**\n%s\n%s\n",
+      $ex->getMessage(),
+      "(Run with --trace for a full exception trace.)");
   }
-
-  echo phutil_console_format(
-    "**Exception**\n%s\n%s\n",
-    $ex->getMessage(),
-    "(Run with --trace for a full exception trace.)");
 
   exit(1);
 }
@@ -522,9 +511,7 @@ function arcanist_load_libraries(
       if ($must_load) {
         throw new ArcanistUsageException($error);
       } else {
-        file_put_contents(
-          'php://stderr',
-          phutil_console_wrap('WARNING: '.$error."\n\n"));
+        fwrite(STDERR, phutil_console_wrap('WARNING: '.$error."\n\n"));
       }
     } catch (PhutilLibraryConflictException $ex) {
       if ($ex->getLibrary() != 'arcanist') {

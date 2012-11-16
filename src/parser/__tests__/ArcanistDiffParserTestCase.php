@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Test cases for @{class:ArcanistDiffParser}.
  *
@@ -93,6 +77,7 @@ final class ArcanistDiffParserTestCase extends ArcanistTestCase {
  %%
  %%
  %%%
+
 EOCORPUS;
         $corpus_1 = <<<EOCORPUS
  %%%%%
@@ -100,6 +85,7 @@ EOCORPUS;
 {$there_is_a_literal_trailing_space_here}
 -!
 +! quack
+
 EOCORPUS;
         $this->assertEqual(
           $corpus_0,
@@ -540,9 +526,101 @@ EOTEXT
       case 'hg-patch.hgdiff':
         $this->assertEqual(1, count($changes));
         break;
+      case 'custom-prefixes.gitdiff':
+        $this->assertEqual(1, count($changes));
+        $change = head($changes);
+        $this->assertEqual(
+          'dst/file',
+          $change->getCurrentPath());
+        break;
+      case 'more-newlines.svndiff':
+        $this->assertEqual(1, count($changes));
+        break;
+      case 'suppress-blank-empty.gitdiff':
+        $this->assertEqual(1, count($changes));
+        break;
       default:
         throw new Exception("No test block for diff file {$diff_file}.");
         break;
     }
   }
+
+  public function testGitPrefixStripping() {
+    static $tests = array(
+      'a/file.c'    => 'file.c',
+      'b/file.c'    => 'file.c',
+      'i/file.c'    => 'file.c',
+      'c/file.c'    => 'file.c',
+      'w/file.c'    => 'file.c',
+      'o/file.c'    => 'file.c',
+      '1/file.c'    => 'file.c',
+      '2/file.c'    => 'file.c',
+      'src/file.c'  => 'src/file.c',
+      'file.c'      => 'file.c',
+    );
+
+    foreach ($tests as $input => $expect) {
+      $this->assertEqual(
+        $expect,
+        ArcanistDiffParser::stripGitPathPrefix($input),
+        "Strip git prefix from '{$input}'.");
+    }
+  }
+
+  public function testGitPathSplitting() {
+    static $tests = array(
+      "a/old.c b/new.c"       => array('old.c', 'new.c'),
+      "a/old.c b/new.c\n"     => array('old.c', 'new.c'),
+      "a/old.c b/new.c\r\n"   => array('old.c', 'new.c'),
+      "old.c new.c"           => array('old.c', 'new.c'),
+      "1/old.c 2/new.c"       => array('old.c', 'new.c'),
+      '"a/\\"quotes1\\"" "b/\\"quotes2\\""' => array(
+        '"quotes1"',
+        '"quotes2"',
+      ),
+      '"a/\\"quotes and spaces1\\"" "b/\\"quotes and spaces2\\""' => array(
+        '"quotes and spaces1"',
+        '"quotes and spaces2"',
+      ),
+      '"a/\\342\\230\\2031" "b/\\342\\230\\2032"' => array(
+        "\xE2\x98\x831",
+        "\xE2\x98\x832",
+      ),
+      "a/Core Data/old.c b/Core Data/new.c" => array(
+        'Core Data/old.c',
+        'Core Data/new.c',
+      ),
+      "some file with spaces.c some file with spaces.c" => array(
+        'some file with spaces.c',
+        'some file with spaces.c',
+      ),
+    );
+
+    foreach ($tests as $input => $expect) {
+      $result = ArcanistDiffParser::splitGitDiffPaths($input);
+      $this->assertEqual(
+        $expect,
+        $result,
+        "Split: {$input}");
+    }
+
+
+    static $ambiguous = array(
+      "old file with spaces.c new file with spaces.c",
+    );
+
+    foreach ($ambiguous as $input) {
+      $caught = null;
+      try {
+        ArcanistDiffParser::splitGitDiffPaths($input);
+      } catch (Exception $ex) {
+        $caught = $ex;
+      }
+      $this->assertEqual(
+        true,
+        ($caught instanceof Exception),
+        "Ambiguous: {$input}");
+    }
+  }
+
 }

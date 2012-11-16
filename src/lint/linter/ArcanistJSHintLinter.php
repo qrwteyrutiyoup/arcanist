@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Uses "JSHint" to detect errors and potential problems in JavaScript code.
  * To use this linter, you must install jshint through NPM (Node Package
@@ -145,7 +129,7 @@ final class ArcanistJSHintLinter extends ArcanistLinter {
   }
 
   public function lintPath($path) {
-    list($rc, $stdout) = $this->results[$path];
+    list($rc, $stdout, $stderr) = $this->results[$path];
 
     if ($rc === 0) {
       return;
@@ -155,9 +139,9 @@ final class ArcanistJSHintLinter extends ArcanistLinter {
     if (!is_array($errors)) {
       // Something went wrong and we can't decode the output. Exit abnormally.
       throw new ArcanistUsageException(
-        "JSHint returned output we can't parse. Check that your JSHint installation.\n".
-        "Output:\n".
-        $stdout);
+        "JSHint returned unparseable output.\n".
+        "stdout:\n\n{$stdout}".
+        "stderr:\n\n{$stderr}");
     }
 
     foreach ($errors as $err) {

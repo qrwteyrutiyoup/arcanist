@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Runs lint rules on changes.
  *
@@ -29,12 +13,18 @@ class ArcanistLintWorkflow extends ArcanistBaseWorkflow {
   const RESULT_SKIP       = 3;
   const RESULT_POSTPONED  = 4;
 
+  const DEFAULT_SEVERITY = ArcanistLintSeverity::SEVERITY_ADVICE;
+
   private $unresolvedMessages;
   private $shouldAmendChanges = false;
   private $shouldAmendWithoutPrompt = false;
   private $shouldAmendAutofixesWithoutPrompt = false;
   private $engine;
   private $postponedLinters;
+
+  public function getWorkflowName() {
+    return 'lint';
+  }
 
   public function setShouldAmendChanges($should_amend) {
     $this->shouldAmendChanges = $should_amend;
@@ -121,6 +111,15 @@ EOTEXT
           'When linting git repositories, amend HEAD with autofix '.
           'patches suggested by lint without prompting.',
       ),
+      'severity' => array(
+        'param' => 'string',
+        'help' =>
+          "Set minimum message severity. One of: '".
+          implode(
+            "', '",
+            array_keys(ArcanistLintSeverity::getLintSeverities())).
+          "'. Defaults to '".self::DEFAULT_SEVERITY."'.",
+      ),
       '*' => 'paths',
     );
   }
@@ -174,7 +173,8 @@ EOTEXT
     $this->engine = $engine;
     $engine->setWorkingCopy($working_copy);
 
-    $engine->setMinimumSeverity(ArcanistLintSeverity::SEVERITY_ADVICE);
+    $engine->setMinimumSeverity(
+      $this->getArgument('severity', self::DEFAULT_SEVERITY));
 
     // Propagate information about which lines changed to the lint engine.
     // This is used so that the lint engine can drop warning messages
@@ -190,14 +190,21 @@ EOTEXT
       }
     }
 
-    // Enable possible async linting only for 'arc diff' not 'arc unit'
+    // Enable possible async linting only for 'arc diff' not 'arc lint'
     if ($this->getParentWorkflow()) {
       $engine->setEnableAsyncLint(true);
     } else {
       $engine->setEnableAsyncLint(false);
     }
 
-    $results = $engine->run();
+    $failed = null;
+    try {
+      $engine->run();
+    } catch (Exception $ex) {
+      $failed = $ex;
+    }
+
+    $results = $engine->getResults();
 
     // It'd be nice to just return a single result from the run method above
     // which contains both the lint messages and the postponed linters.
@@ -329,6 +336,15 @@ EOTEXT
           "Sort out the lint changes that were applied to the working ".
           "copy and relint.");
       }
+    }
+
+    if ($this->getArgument('output') == 'json') {
+      // NOTE: Required by save_lint.php in Phabricator.
+      return 0;
+    }
+
+    if ($failed) {
+      throw $failed;
     }
 
     $unresolved = array();

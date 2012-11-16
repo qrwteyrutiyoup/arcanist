@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Interfaces with the Mercurial working copies.
  *
@@ -30,6 +14,7 @@ final class ArcanistMercurialAPI extends ArcanistRepositoryAPI {
   private $workingCopyRevision;
   private $localCommitInfo;
   private $includeDirectoryStateInDiffs;
+  private $rawDiffCache = array();
 
   protected function buildLocalFuture(array $argv) {
 
@@ -260,6 +245,19 @@ final class ArcanistMercurialAPI extends ArcanistRepositoryAPI {
     return $this->localCommitInfo;
   }
 
+  public function getAllFiles() {
+    // TODO: Handle paths with newlines.
+    $future = $this->buildLocalFuture(array('manifest'));
+    return new LinesOfALargeExecFuture($future);
+  }
+
+  public function getChangedFiles($since_commit) {
+    list($stdout) = $this->execxLocal(
+      'status --rev %s',
+      $since_commit);
+    return ArcanistMercurialParser::parseMercurialStatus($stdout);
+  }
+
   public function getBlame($path) {
     list($stdout) = $this->execxLocal(
       'annotate -u -v -c --rev %s -- %s',
@@ -294,6 +292,10 @@ final class ArcanistMercurialAPI extends ArcanistRepositoryAPI {
       // there is no way to get file change status across multiple commits, so
       // just take the entire diff and parse it to figure out what's changed.
 
+      // Execute status in the background
+      $status_future = $this->buildLocalFuture(array('status'));
+      $status_future->start();
+
       $diff = $this->getFullMercurialDiff();
 
       if (!$diff) {
@@ -327,7 +329,7 @@ final class ArcanistMercurialAPI extends ArcanistRepositoryAPI {
         $status_map[$change->getCurrentPath()] = $flags;
       }
 
-      list($stdout) = $this->execxLocal('status');
+      list($stdout) = $status_future->resolvex();
 
       $working_status = ArcanistMercurialParser::parseMercurialStatus($stdout);
       foreach ($working_status as $path => $status) {
@@ -370,11 +372,18 @@ final class ArcanistMercurialAPI extends ArcanistRepositoryAPI {
       $range .= '...';
     }
 
+    $raw_diff_cache_key = $options.' '.$range.' '.$path;
+    if (idx($this->rawDiffCache, $raw_diff_cache_key)) {
+      return idx($this->rawDiffCache, $raw_diff_cache_key);
+    }
+
     list($stdout) = $this->execxLocal(
       'diff %C --rev %s -- %s',
       $options,
       $range,
       $path);
+
+    $this->rawDiffCache[$raw_diff_cache_key] = $stdout;
 
     return $stdout;
   }
@@ -425,6 +434,11 @@ final class ArcanistMercurialAPI extends ArcanistRepositoryAPI {
 
   public function supportsRelativeLocalCommits() {
     return true;
+  }
+
+  public function setDefaultBaseCommit() {
+    $this->setRelativeCommit('.^');
+    return $this;
   }
 
   public function hasLocalCommit($commit) {

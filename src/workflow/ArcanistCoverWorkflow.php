@@ -1,27 +1,15 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Covers your professional reputation by blaming changes to locate reviewers.
  *
  * @group workflow
  */
 final class ArcanistCoverWorkflow extends ArcanistBaseWorkflow {
+
+  public function getWorkflowName() {
+    return 'cover';
+  }
 
   public function getCommandSynopses() {
     return phutil_console_format(<<<EOTEXT
@@ -32,7 +20,7 @@ EOTEXT
 
   public function getCommandHelp() {
     return phutil_console_format(<<<EOTEXT
-          Supports: svn, git
+          Supports: svn, git, hg
           Cover your... professional reputation. Show blame for the lines you
           changed in your working copy (svn) or since some commit (hg, git).
           This will take a minute because blame takes a minute, especially under

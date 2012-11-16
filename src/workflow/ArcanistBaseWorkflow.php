@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Implements a runnable command, like "arc diff" or "arc help".
  *
@@ -82,6 +66,28 @@ abstract class ArcanistBaseWorkflow {
 
 
   abstract public function run();
+
+  /**
+   * Return the command used to invoke this workflow from the command like,
+   * e.g. "help" for @{class:ArcanistHelpWorkflow}.
+   *
+   * @return string   The command a user types to invoke this workflow.
+   */
+  abstract public function getWorkflowName();
+
+  /**
+   * Return console formatted string with all command synopses.
+   *
+   * @return string  6-space indented list of available command synopses.
+   */
+  abstract public function getCommandSynopses();
+
+  /**
+   * Return console formatted string with command help printed in `arc help`.
+   *
+   * @return string  10-space indented help to use the command.
+   */
+  abstract public function getCommandHelp();
 
 
 /* -(  Conduit  )------------------------------------------------------------ */
@@ -462,14 +468,6 @@ abstract class ArcanistBaseWorkflow {
     return $this->arcanistConfiguration;
   }
 
-  public function getCommandSynopses() {
-    return get_class($this).": Undocumented";
-  }
-
-  public function getCommandHelp() {
-    return get_class($this).": Undocumented";
-  }
-
   public function requiresWorkingCopy() {
     return false;
   }
@@ -721,15 +719,6 @@ abstract class ArcanistBaseWorkflow {
     $untracked = $api->getUntrackedChanges();
     if ($this->shouldRequireCleanUntrackedFiles()) {
 
-      // Exempt ".arc/" scratch files from this warning so that things work
-      // a little more smoothly if no one has gotten around to adding .arc to
-      // the ignore list.
-      foreach ($untracked as $key => $path) {
-        if (preg_match('@\.arc/@', $path)) {
-          unset($untracked[$key]);
-        }
-      }
-
       if (!empty($untracked)) {
         echo "You have untracked files in this working copy.\n\n".
              $working_copy_desc.
@@ -839,6 +828,7 @@ abstract class ArcanistBaseWorkflow {
     $bundle->setProjectID($diff['projectName']);
     $bundle->setBaseRevision($diff['sourceControlBaseRevision']);
     $bundle->setRevisionID($diff['revisionID']);
+    $bundle->setAuthor($diff['author']);
     return $bundle;
   }
 
@@ -939,7 +929,7 @@ abstract class ArcanistBaseWorkflow {
   }
 
   protected function normalizeRevisionID($revision_id) {
-    return ltrim(strtoupper($revision_id), 'D');
+    return preg_replace('/^D/i', '', $revision_id);
   }
 
   protected function shouldShellComplete() {
@@ -1097,7 +1087,7 @@ abstract class ArcanistBaseWorkflow {
    * @return void
    */
   protected function writeStatusMessage($msg) {
-    file_put_contents('php://stderr', $msg);
+    fwrite(STDERR, $msg);
   }
 
   protected function isHistoryImmutable() {
@@ -1321,6 +1311,9 @@ abstract class ArcanistBaseWorkflow {
 
   protected function newDiffParser() {
     $parser = new ArcanistDiffParser();
+    if ($this->repositoryAPI) {
+      $parser->setRepositoryAPI($this->getRepositoryAPI());
+    }
     $parser->setWriteDiffOnFailure(true);
     return $parser;
   }

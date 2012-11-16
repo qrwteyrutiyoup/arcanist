@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Lint engine which enforces libphutil rules.
  *
@@ -30,11 +14,7 @@ class PhutilLintEngine extends ArcanistLintEngine {
 
     $paths = $this->getPaths();
 
-    $library_linter = new ArcanistPhutilLibraryLinter();
-    $linters[] = $library_linter;
-    foreach ($paths as $path) {
-      $library_linter->addPath($path);
-    }
+    $linters[] = id(new ArcanistPhutilLibraryLinter())->setPaths($paths);
 
     // Remaining linters operate on file contents and ignore removed files.
     foreach ($paths as $key => $path) {
@@ -48,65 +28,27 @@ class PhutilLintEngine extends ArcanistLintEngine {
       }
     }
 
-    $generated_linter = new ArcanistGeneratedLinter();
-    $linters[] = $generated_linter;
+    $linters[] = id(new ArcanistFilenameLinter())->setPaths($paths);
 
-    $nolint_linter = new ArcanistNoLintLinter();
-    $linters[] = $nolint_linter;
-
-    $text_linter = new ArcanistTextLinter();
-    $linters[] = $text_linter;
-
-    $spelling_linter = new ArcanistSpellingLinter();
-    $linters[] = $spelling_linter;
-    foreach ($paths as $path) {
-      $is_text = false;
-      if (preg_match('/\.(php|css|js|hpp|cpp|l|y)$/', $path)) {
-        $is_text = true;
+    // Skip directories and lint only regular files in remaining linters.
+    foreach ($paths as $key => $path) {
+      if ($this->getCommitHookMode()) {
+        continue;
       }
-      if ($is_text) {
-        $generated_linter->addPath($path);
-        $generated_linter->addData($path, $this->loadData($path));
-
-        $nolint_linter->addPath($path);
-        $nolint_linter->addData($path, $this->loadData($path));
-
-        $text_linter->addPath($path);
-        $text_linter->addData($path, $this->loadData($path));
-
-        $spelling_linter->addPath($path);
-        $spelling_linter->addData($path, $this->loadData($path));
+      if (!is_file($this->getFilePathOnDisk($path))) {
+        unset($paths[$key]);
       }
     }
 
-    $name_linter = new ArcanistFilenameLinter();
-    $linters[] = $name_linter;
-    foreach ($paths as $path) {
-      $name_linter->addPath($path);
-    }
+    $text_paths = preg_grep('/\.(php|css|js|hpp|cpp|l|y)$/', $paths);
+    $linters[] = id(new ArcanistGeneratedLinter())->setPaths($text_paths);
+    $linters[] = id(new ArcanistNoLintLinter())->setPaths($text_paths);
+    $linters[] = id(new ArcanistTextLinter())->setPaths($text_paths);
+    $linters[] = id(new ArcanistSpellingLinter())->setPaths($text_paths);
 
-
-    $xhpast_linter = new ArcanistXHPASTLinter();
-    $xhpast_map = $this->getXHPASTSeverityMap();
-    $xhpast_linter->setCustomSeverityMap($xhpast_map);
-    $linters[] = $xhpast_linter;
-    foreach ($paths as $path) {
-      if (preg_match('/\.php$/', $path)) {
-        $xhpast_linter->addPath($path);
-        $xhpast_linter->addData($path, $this->loadData($path));
-      }
-    }
-
-    $license_linter = new ArcanistApacheLicenseLinter();
-    $linters[] = $license_linter;
-    foreach ($paths as $path) {
-      if (preg_match('/\.(php|cpp|hpp|l|y)$/', $path)) {
-        if (!preg_match('@^externals/@', $path)) {
-          $license_linter->addPath($path);
-          $license_linter->addData($path, $this->loadData($path));
-        }
-      }
-    }
+    $linters[] = id(new ArcanistXHPASTLinter())
+      ->setCustomSeverityMap($this->getXHPASTSeverityMap())
+      ->setPaths(preg_grep('/\.php$/', $paths));
 
     return $linters;
   }

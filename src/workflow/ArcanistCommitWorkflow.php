@@ -1,21 +1,5 @@
 <?php
 
-/*
- * Copyright 2012 Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * Executes "svn commit" once a revision has been "Accepted".
  *
@@ -24,6 +8,10 @@
 final class ArcanistCommitWorkflow extends ArcanistBaseWorkflow {
 
   private $revisionID;
+
+  public function getWorkflowName() {
+    return 'commit';
+  }
 
   public function getCommandSynopses() {
     return phutil_console_format(<<<EOTEXT
@@ -153,17 +141,17 @@ EOTEXT
 
     $files = $this->getCommitFileList($revision);
 
-    $files = implode(' ', array_map('escapeshellarg', $files));
-    $message = escapeshellarg($message);
-    $root = escapeshellarg($repository_api->getPath());
+    $tmp_file = new TempFile();
+    Filesystem::writeFile($tmp_file, $message);
 
-    $lang = $this->getSVNLangEnvVar();
+    $command = $this->getSVNCommitCommand();
+    chdir($repository_api->getPath());
 
-    // Specify LANG explicitly so that UTF-8 commit messages don't break
-    // subversion.
-    $command = "(cd {$root} && LANG={$lang} svn commit {$files} -m {$message})";
-
-    $err = phutil_passthru('%C', $command);
+    $err = phutil_passthru(
+      $command,
+      $files,
+      $tmp_file
+    );
 
     if ($err) {
       throw new Exception("Executing 'svn commit' failed!");
@@ -257,7 +245,10 @@ EOTEXT
       $this->promptFileWarning($prefix, $prompt, $do_not_exist);
     }
 
-    $files = array_keys($commit_paths);
+    $files = array();
+    foreach ($commit_paths as $file => $ignored) {
+      $files[] = $file.'@'; // make SVN accept commits like foo@2x.png
+    }
 
     if (empty($files)) {
       throw new ArcanistUsageException(
@@ -289,7 +280,8 @@ EOTEXT
    *   svn: warning: environment variable LANG is en_US.utf8
    *   svn: warning: please check that your locale name is correct
    *
-   * For example, is happens on my 10.6.7 machine with Subversion 1.6.15.
+   * For example, it happens on epriestley's Mac (10.6.7) with
+   * Subversion 1.6.15.
    */
   private function getSVNLangEnvVar() {
     $locale = 'en_US.utf8';
@@ -304,6 +296,16 @@ EOTEXT
       // Ignore.
     }
     return $locale;
+  }
+
+  private function getSVNCommitCommand() {
+    $command = 'svn commit %Ls --encoding utf-8 -F %s';
+    // make sure to specify LANG on non-windows systems to surpress any fancy
+    // warnings; see @{method:getSVNLangEnvVar}.
+    if (!phutil_is_windows()) {
+      $command = 'LANG='.$this->getSVNLangEnvVar().' '.$command;
+    }
+    return $command;
   }
 
   private function runSanityChecks(array $revision) {
