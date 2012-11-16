@@ -24,6 +24,10 @@
  */
 final class ArcanistTectWorkflow extends ArcanistBaseWorkflow {
 
+  public function getWorkflowName() {
+    return "tect";
+  }
+
   public function getCommandSynopses() {
     return phutil_console_format(<<<EOTEXT
       **tect** [--revision __revision_id__] [--show]
