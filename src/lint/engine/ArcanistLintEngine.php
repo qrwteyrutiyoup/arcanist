@@ -3,12 +3,12 @@
 /**
  * Manages lint execution. When you run 'arc lint' or 'arc diff', Arcanist
  * checks your .arcconfig to see if you have specified a lint engine in the
- * key "lint_engine". The engine must extend this class. For example:
+ * key "lint.engine". The engine must extend this class. For example:
  *
  *  lang=js
  *  {
  *    // ...
- *    "lint_engine" : "ExampleLintEngine",
+ *    "lint.engine" : "ExampleLintEngine",
  *    // ...
  *  }
  *
@@ -50,6 +50,8 @@ abstract class ArcanistLintEngine {
 
   protected $charToLine = array();
   protected $lineToFirstChar = array();
+  private $cachedResults;
+  private $cacheVersion;
   private $results = array();
   private $minimumSeverity = ArcanistLintSeverity::SEVERITY_DISABLED;
 
@@ -181,6 +183,12 @@ abstract class ArcanistLintEngine {
       throw new ArcanistNoEffectException("No paths are lintable.");
     }
 
+    $versions = array($this->getCacheVersion());
+    foreach ($linters as $linter) {
+      $versions[] = get_class($linter).':'.$linter->getCacheVersion();
+    }
+    $this->cacheVersion = crc32(implode("\n", $versions));
+
     $exceptions = array();
     foreach ($linters as $linter_name => $linter) {
       try {
@@ -190,12 +198,19 @@ abstract class ArcanistLintEngine {
         }
         $paths = $linter->getPaths();
 
+        $cache_granularity = $linter->getCacheGranularity();
+
         foreach ($paths as $key => $path) {
           // Make sure each path has a result generated, even if it is empty
           // (i.e., the file has no lint messages).
           $result = $this->getResultForPath($path);
           if (isset($stopped[$path])) {
             unset($paths[$key]);
+          }
+          if (isset($this->cachedResults[$path][$this->cacheVersion])) {
+            if ($cache_granularity == ArcanistLinter::GRANULARITY_FILE) {
+              unset($paths[$key]);
+            }
           }
         }
         $paths = array_values($paths);
@@ -219,6 +234,9 @@ abstract class ArcanistLintEngine {
           if (!$this->isRelevantMessage($message)) {
             continue;
           }
+          if ($cache_granularity != ArcanistLinter::GRANULARITY_FILE) {
+            $message->setUncacheable(true);
+          }
           $result = $this->getResultForPath($message->getPath());
           $result->addMessage($message);
         }
@@ -227,6 +245,15 @@ abstract class ArcanistLintEngine {
           $linter_name = get_class($linter);
         }
         $exceptions[$linter_name] = $ex;
+      }
+    }
+
+    if ($this->cachedResults) {
+      foreach ($this->cachedResults as $path => $messages) {
+        foreach (idx($messages, $this->cacheVersion, array()) as $message) {
+          $this->getResultForPath($path)->addMessage(
+            ArcanistLintMessage::newFromDictionary($message));
+        }
       }
     }
 
@@ -256,6 +283,15 @@ abstract class ArcanistLintEngine {
     }
 
     return $this->results;
+  }
+
+  /**
+   * @param dict<string path, dict<int version, list<dict message>>>
+   * @return this
+   */
+  public function setCachedResults(array $results) {
+    $this->cachedResults = $results;
+    return $this;
   }
 
   public function getResults() {
@@ -291,10 +327,11 @@ abstract class ArcanistLintEngine {
     return false;
   }
 
-  private function getResultForPath($path) {
+  protected function getResultForPath($path) {
     if (empty($this->results[$path])) {
       $result = new ArcanistLintResult();
       $result->setPath($path);
+      $result->setCacheVersion($this->cacheVersion);
       $this->results[$path] = $result;
     }
     return $this->results[$path];
@@ -334,6 +371,10 @@ abstract class ArcanistLintEngine {
   public function setPostponedLinters(array $linters) {
     $this->postponedLinters = $linters;
     return $this;
+  }
+
+  protected function getCacheVersion() {
+    return 0;
   }
 
   protected function getPEP8WithTextOptions() {

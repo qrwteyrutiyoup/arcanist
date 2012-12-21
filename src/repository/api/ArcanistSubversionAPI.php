@@ -15,6 +15,7 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
   protected $svnDiffRaw = array();
 
   private $svnBaseRevisionNumber;
+  private $statusPaths = array();
 
   public function getSourceControlSystemName() {
     return 'svn';
@@ -46,17 +47,13 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
     return $future;
   }
 
-
-  public function hasMergeConflicts() {
-    foreach ($this->getSVNStatus() as $path => $mask) {
-      if ($mask & self::FLAG_CONFLICT) {
-        return true;
-      }
-    }
-    return false;
+  protected function buildCommitRangeStatus() {
+    // In SVN, the commit range is always "uncommitted changes", so these
+    // statuses are equivalent.
+    return $this->getUncommittedStatus();
   }
 
-  public function getWorkingCopyStatus() {
+  protected function buildUncommittedStatus() {
     return $this->getSVNStatus();
   }
 
@@ -67,9 +64,20 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
     return $this->svnBaseRevisions;
   }
 
+  public function limitStatusToPaths(array $paths) {
+    $this->statusPaths = $paths;
+    return $this;
+  }
+
   public function getSVNStatus($with_externals = false) {
     if ($this->svnStatus === null) {
-      list($status) = $this->execxLocal('--xml status');
+      if ($this->statusPaths) {
+        list($status) = $this->execxLocal(
+          '--xml status %Ls',
+          $this->statusPaths);
+      } else {
+        list($status) = $this->execxLocal('--xml status');
+      }
       $xml = new SimpleXMLElement($status);
 
       if (count($xml->target) != 1) {
@@ -169,6 +177,12 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
       default:
         throw new Exception("Unrecognized item status '{$item}'.");
     }
+  }
+
+  public function addToCommit(array $paths) {
+    $this->execxLocal(
+      'add -- %Ls',
+      $paths);
   }
 
   public function getSVNProperty($path, $property) {
@@ -551,7 +565,11 @@ EODIFF;
     return false;
   }
 
-  public function supportsRelativeLocalCommits() {
+  public function supportsCommitRanges() {
+    return false;
+  }
+
+  public function supportsLocalCommits() {
     return false;
   }
 

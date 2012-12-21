@@ -34,7 +34,16 @@
  * @group workflow
  * @stable
  */
-abstract class ArcanistBaseWorkflow {
+abstract class ArcanistBaseWorkflow extends Phobject {
+
+  const COMMIT_DISABLE = 0;
+  const COMMIT_ALLOW = 1;
+  const COMMIT_ENABLE = 2;
+
+  const AUTO_COMMIT_TITLE = 'Automatic commit by arc';
+
+  private $commitMode = self::COMMIT_DISABLE;
+  private $shouldAmend;
 
   private $conduit;
   private $conduitURI;
@@ -51,7 +60,7 @@ abstract class ArcanistBaseWorkflow {
   private $passedArguments;
   private $command;
 
-  private $repositoryEncoding;
+  private $projectInfo;
 
   private $arcanistConfiguration;
   private $parentWorkflow;
@@ -162,7 +171,30 @@ abstract class ArcanistBaseWorkflow {
       $this->conduit->setTimeout($this->conduitTimeout);
     }
 
+    $user = $this->getConfigFromWhateverSourceAvailiable('http.basicauth.user');
+    $pass = $this->getConfigFromWhateverSourceAvailiable('http.basicauth.pass');
+    if ($user !== null && $pass !== null) {
+      $this->conduit->setBasicAuthCredentials($user, $pass);
+    }
+
     return $this;
+  }
+
+  final public function getConfigFromWhateverSourceAvailiable($key) {
+    if ($this->requiresWorkingCopy()) {
+      $working_copy = $this->getWorkingCopy();
+      return $working_copy->getConfigFromAnySource($key);
+    } else {
+      $global_config = self::readGlobalArcConfig();
+      $pval = idx($global_config, $key);
+
+      if ($pval === null) {
+        $system_config = self::readSystemArcConfig();
+        $pval = idx($system_config, $key);
+      }
+
+      return $pval;
+    }
   }
 
 
@@ -221,7 +253,7 @@ abstract class ArcanistBaseWorkflow {
    * @task conduit
    */
   public function getConduitVersion() {
-    return nonempty($this->forcedConduitVersion, 5);
+    return nonempty($this->forcedConduitVersion, 6);
   }
 
 
@@ -709,8 +741,15 @@ abstract class ArcanistBaseWorkflow {
     return empty($this->arguments['allow-untracked']);
   }
 
+  public function setCommitMode($mode) {
+    $this->commitMode = $mode;
+    return $this;
+  }
+
   public function requireCleanWorkingCopy() {
     $api = $this->getRepositoryAPI();
+
+    $must_commit = array();
 
     $working_copy_desc = phutil_console_format(
       "  Working copy: __%s__\n\n",
@@ -740,10 +779,16 @@ abstract class ArcanistBaseWorkflow {
             "may have forgotten to 'hg add' them to your commit.");
         }
 
-        $prompt = "Do you want to continue without adding these files?";
-        if (!phutil_console_confirm($prompt, $default_no = false)) {
-          throw new ArcanistUserAbortException();
+        if ($this->askForAdd()) {
+          $api->addToCommit($untracked);
+          $must_commit += array_flip($untracked);
+        } else if ($this->commitMode == self::COMMIT_DISABLE) {
+          $prompt = "Do you want to continue without adding these files?";
+          if (!phutil_console_confirm($prompt, $default_no = false)) {
+            throw new ArcanistUserAbortException();
+          }
         }
+
       }
     }
 
@@ -770,25 +815,117 @@ abstract class ArcanistBaseWorkflow {
 
     $unstaged = $api->getUnstagedChanges();
     if ($unstaged) {
-      throw new ArcanistUsageException(
-        "You have unstaged changes in this working copy. Stage and commit (or ".
-        "revert) them before proceeding.\n\n".
+      echo "You have unstaged changes in this working copy.\n\n".
         $working_copy_desc.
         "  Unstaged changes in working copy:\n".
-        "    ".implode("\n    ", $unstaged)."\n");
+        "    ".implode("\n    ", $unstaged);
+      if ($this->askForAdd()) {
+        $api->addToCommit($unstaged);
+        $must_commit += array_flip($unstaged);
+      } else {
+        throw new ArcanistUsageException(
+          "Stage and commit (or revert) them before proceeding.");
+      }
     }
 
     $uncommitted = $api->getUncommittedChanges();
+    foreach ($uncommitted as $key => $path) {
+      if (array_key_exists($path, $must_commit)) {
+        unset($uncommitted[$key]);
+      }
+    }
     if ($uncommitted) {
-      throw new ArcanistUncommittedChangesException(
-        "You have uncommitted changes in this working copy. Commit (or ".
-        "revert) them before proceeding.\n\n".
+      echo "You have uncommitted changes in this working copy.\n\n".
         $working_copy_desc.
-        "  Uncommitted changes in working copy\n".
-        "    ".implode("\n    ", $uncommitted)."\n");
+        "  Uncommitted changes in working copy:\n".
+        "    ".implode("\n    ", $uncommitted);
+      if ($this->askForAdd()) {
+        $must_commit += array_flip($uncommitted);
+      } else {
+        throw new ArcanistUncommittedChangesException(
+          "Commit (or revert) them before proceeding.");
+      }
+    }
+
+    if ($must_commit) {
+      if ($this->shouldAmend) {
+        $commit = head($api->getLocalCommitInformation());
+        $api->amendCommit($commit['message']);
+      } else if ($api->supportsLocalCommits()) {
+        $api->doCommit(self::AUTO_COMMIT_TITLE);
+      }
     }
   }
 
+  private function shouldAmend() {
+    $api = $this->getRepositoryAPI();
+
+    if ($this->isHistoryImmutable() || !$api->supportsAmend()) {
+      return false;
+    }
+
+    $commits = $api->getLocalCommitInformation();
+    if (!$commits) {
+      return false;
+    }
+    $commit = reset($commits);
+
+    $message = ArcanistDifferentialCommitMessage::newFromRawCorpus(
+      $commit['message']);
+    if ($message->getGitSVNBaseRevision()) {
+      return false;
+    }
+
+    if ($api->getAuthor() != $commit['author']) {
+      return false;
+    }
+
+    // TODO: Check commits since tracking branch. If empty then return false.
+
+    $repository = $this->loadProjectRepository();
+    if ($repository) {
+      $callsign = $repository['callsign'];
+      $known_commits = $this->getConduit()->callMethodSynchronous(
+        'diffusion.getcommits',
+        array('commits' => array('r'.$callsign.$commit['commit'])));
+      if (ifilter($known_commits, 'error', $negate = true)) {
+        return false;
+      }
+    }
+
+    if (!$message->getRevisionID()) {
+      return true;
+    }
+
+    $in_working_copy = $api->loadWorkingCopyDifferentialRevisions(
+      $this->getConduit(),
+      array(
+        'authors' => array($this->getUserPHID()),
+        'status' => 'status-open',
+      ));
+    if ($in_working_copy) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private function askForAdd() {
+    if ($this->commitMode == self::COMMIT_DISABLE) {
+      return false;
+    } else if ($this->commitMode == self::COMMIT_ENABLE) {
+      return true;
+    }
+    if ($this->shouldAmend === null) {
+      $this->shouldAmend = $this->shouldAmend();
+    }
+    if ($this->shouldAmend) {
+      $prompt = "Do you want to amend these files to the commit?";
+    } else {
+      $prompt = "Do you want to add these files to the commit?";
+    }
+    return phutil_console_confirm($prompt);
+  }
 
   protected function loadDiffBundleFromConduit(
     ConduitClient $conduit,
@@ -825,10 +962,12 @@ abstract class ArcanistBaseWorkflow {
     }
     $bundle = ArcanistBundle::newFromChanges($changes);
     $bundle->setConduit($conduit);
-    $bundle->setProjectID($diff['projectName']);
-    $bundle->setBaseRevision($diff['sourceControlBaseRevision']);
-    $bundle->setRevisionID($diff['revisionID']);
-    $bundle->setAuthor($diff['author']);
+    // since the conduit method has changes, assume that these fields
+    // could be unset
+    $bundle->setProjectID(idx($diff, 'projectName'));
+    $bundle->setBaseRevision(idx($diff, 'sourceControlBaseRevision'));
+    $bundle->setRevisionID(idx($diff, 'revisionID'));
+    $bundle->setAuthor(idx($diff, 'author'));
     return $bundle;
   }
 
@@ -863,10 +1002,15 @@ abstract class ArcanistBaseWorkflow {
     return array_keys($lines);
   }
 
-  private function getChange($path) {
+  protected function getChange($path) {
     $repository_api = $this->getRepositoryAPI();
 
-    if ($repository_api instanceof ArcanistSubversionAPI) {
+    // TODO: Very gross
+    $is_git = ($repository_api instanceof ArcanistGitAPI);
+    $is_hg = ($repository_api instanceof ArcanistMercurialAPI);
+    $is_svn = ($repository_api instanceof ArcanistSubversionAPI);
+
+    if ($is_svn) {
       // NOTE: In SVN, we don't currently support a "get all local changes"
       // operation, so special case it.
       if (empty($this->changeCache[$path])) {
@@ -878,7 +1022,7 @@ abstract class ArcanistBaseWorkflow {
         }
         $this->changeCache[$path] = reset($changes);
       }
-    } else if ($repository_api->supportsRelativeLocalCommits()) {
+    } else if ($is_git || $is_hg) {
       if (empty($this->changeCache)) {
         $changes = $repository_api->getAllLocalChanges();
         foreach ($changes as $change) {
@@ -890,7 +1034,7 @@ abstract class ArcanistBaseWorkflow {
     }
 
     if (empty($this->changeCache[$path])) {
-      if ($repository_api instanceof ArcanistGitAPI) {
+      if ($is_git) {
         // This can legitimately occur under git if you make a change, "git
         // commit" it, and then revert the change in the working copy and run
         // "arc lint".
@@ -1141,8 +1285,9 @@ abstract class ArcanistBaseWorkflow {
       }
     } else {
       $repository_api = $this->getRepositoryAPI();
+
       if ($rev) {
-        $repository_api->parseRelativeLocalCommit(array($rev));
+        $this->parseBaseCommitArgument(array($rev));
       }
 
       $paths = $repository_api->getWorkingCopyStatus();
@@ -1276,26 +1421,58 @@ abstract class ArcanistBaseWorkflow {
   }
 
   protected function getRepositoryEncoding() {
-    if ($this->repositoryEncoding) {
-      return $this->repositoryEncoding;
-    }
-
     $default = 'UTF-8';
+    return nonempty(idx($this->getProjectInfo(), 'encoding'), $default);
+  }
 
-    $project_id = $this->getWorkingCopy()->getProjectID();
-    if (!$project_id) {
-      return $default;
+  protected function getProjectInfo() {
+    if ($this->projectInfo === null) {
+      $project_id = $this->getWorkingCopy()->getProjectID();
+      if (!$project_id) {
+        $this->projectInfo = array();
+      } else {
+        try {
+          $this->projectInfo = $this->getConduit()->callMethodSynchronous(
+            'arcanist.projectinfo',
+            array(
+              'name' => $project_id,
+            ));
+        } catch (ConduitClientException $ex) {
+          if ($ex->getErrorCode() != 'ERR-BAD-ARCANIST-PROJECT') {
+            throw $ex;
+          }
+
+          // TODO: Implement a proper query method that doesn't throw on
+          // project not found. We just swallow this because some pathways,
+          // like Git with uncommitted changes in a repository with a new
+          // project ID, may attempt to access project information before
+          // the project is created. See T2153.
+          return array();
+        }
+      }
     }
 
-    $project_info = $this->getConduit()->callMethodSynchronous(
-      'arcanist.projectinfo',
-      array(
-        'name' => $project_id,
-      ));
+    return $this->projectInfo;
+  }
 
-    $this->repositoryEncoding = nonempty($project_info['encoding'], $default);
+  protected function loadProjectRepository() {
+    $project = $this->getProjectInfo();
+    if (isset($project['repository'])) {
+      return $project['repository'];
+    }
+    // NOTE: The rest of the code is here for backwards compatibility.
 
-    return $this->repositoryEncoding;
+    $repository_phid = idx($project, 'repositoryPHID');
+    if (!$repository_phid) {
+      return array();
+    }
+
+    $repositories = $this->getConduit()->callMethodSynchronous(
+      'repository.query',
+      array());
+    $repositories = ipull($repositories, null, 'phid');
+
+    return idx($repositories, $repository_phid, array());
   }
 
   protected function newInteractiveEditor($text) {
@@ -1318,6 +1495,21 @@ abstract class ArcanistBaseWorkflow {
     return $parser;
   }
 
+  protected function resolveCall(ConduitFuture $method, $timeout = null) {
+    try {
+      return $method->resolve($timeout);
+    } catch (ConduitClientException $ex) {
+      if ($ex->getErrorCode() == 'ERR-CONDUIT-CALL') {
+        echo phutil_console_wrap(
+          "This feature requires a newer version of Phabricator. Please ".
+          "update it using these instructions: ".
+          "http://www.phabricator.com/docs/phabricator/article/".
+          "Installation_Guide.html#updating-phabricator\n\n");
+      }
+      throw $ex;
+    }
+  }
+
   protected function dispatchEvent($type, array $data) {
     $data += array(
       'workflow' => $this,
@@ -1327,6 +1519,28 @@ abstract class ArcanistBaseWorkflow {
     PhutilEventEngine::dispatchEvent($event);
 
     return $event;
+  }
+
+  public function parseBaseCommitArgument(array $argv) {
+    if (!count($argv)) {
+      return;
+    }
+
+    $api = $this->getRepositoryAPI();
+    if (!$api->supportsCommitRanges()) {
+      throw new ArcanistUsageException(
+        "This version control system does not support commit ranges.");
+    }
+
+    if (count($argv) > 1) {
+      throw new ArcanistUsageException(
+        "Specify exactly one base commit. The end of the commit range is ".
+        "always the working copy state.");
+    }
+
+    $api->setBaseCommit(head($argv));
+
+    return $this;
   }
 
 }

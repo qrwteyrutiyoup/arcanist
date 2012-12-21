@@ -8,6 +8,11 @@
  */
 abstract class ArcanistLinter {
 
+  const GRANULARITY_FILE = 1;
+  const GRANULARITY_DIRECTORY = 2;
+  const GRANULARITY_REPOSITORY = 3;
+  const GRANULARITY_GLOBAL = 4;
+
   protected $paths  = array();
   protected $data   = array();
   protected $engine;
@@ -79,6 +84,10 @@ abstract class ArcanistLinter {
 
   protected function getEngine() {
     return $this->engine;
+  }
+
+  public function getCacheVersion() {
+    return 0;
   }
 
   public function getLintMessageFullCode($short_code) {
@@ -205,6 +214,10 @@ abstract class ArcanistLinter {
 
   public function getLintNameMap() {
     return array();
+  }
+
+  public function getCacheGranularity() {
+    return self::GRANULARITY_FILE;
   }
 
 }
