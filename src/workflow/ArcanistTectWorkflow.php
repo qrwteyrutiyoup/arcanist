@@ -146,7 +146,6 @@ EOTEXT
         'differential.getcommitdata',
         array(
           'revision_id' => $revision_id,
-          'edit'        => false,
         )
       );
     } catch (ConduitClientException $ex) {
