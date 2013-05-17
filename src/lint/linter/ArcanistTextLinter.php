@@ -15,7 +15,7 @@ final class ArcanistTextLinter extends ArcanistLinter {
   const LINT_TRAILING_WHITESPACE    = 6;
   const LINT_NO_COMMIT              = 7;
 
-  private $maxLineLength = 80;
+  private $maxLineLength = 120;
 
   public function getLinterPriority() {
     return 0.5;
