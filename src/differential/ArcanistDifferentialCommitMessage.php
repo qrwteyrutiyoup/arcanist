@@ -14,6 +14,34 @@ final class ArcanistDifferentialCommitMessage {
   private $gitSVNBaseRevision;
   private $gitSVNBasePath;
   private $gitSVNUUID;
+  private static $workingCopy = null;
+
+  private function isReallyGitSVN() {
+    if (!$this::$workingCopy) {
+      $this::$workingCopy = ArcanistWorkingCopyIdentity::newFromPath(getcwd());
+    }
+
+    $ret = $this::$workingCopy->getConfigFromAnySource("repo.gitsvn");
+
+    if ($ret === NULL) {
+      $ok = phutil_console_confirm("This *seems* to be a git-svn repository, but ".
+        "be aware that some projects -- such as WebKit -- will appear as being a ".
+        "git-svn repo even if in practice, the actual repository is not using it (".
+        "such as when you are using a git mirror of WebKit).\n ".
+        "Is this really a git-svn repo?", $default_no = false);
+      $this::$workingCopy->setRuntimeConfig("repo.gitsvn", $ok);
+      return $ok;
+    }
+
+    $accepted = array("yes", "true", "1");
+    foreach ($accepted as $yes) {
+        if (strcasecmp($yes, $ret) == 0) {
+            return true;
+        }
+    }
+    return false;
+
+  }
 
   public static function newFromRawCorpus($corpus) {
     $obj = new ArcanistDifferentialCommitMessage();
@@ -45,7 +73,7 @@ final class ArcanistDifferentialCommitMessage {
     }
 
     $pattern = '/^git-svn-id:\s*([^@]+)@(\d+)\s+(.*)$/m';
-    if (preg_match($pattern, $corpus, $match)) {
+    if (preg_match($pattern, $corpus, $match) && $obj->isReallyGitSVN()) {
       $obj->gitSVNBaseRevision = $match[1].'@'.$match[2];
       $obj->gitSVNBasePath     = $match[1];
       $obj->gitSVNUUID         = $match[3];
